@@ -168,6 +168,7 @@ fn parse_create_token_instruction(
         bonding_curve: accounts[2],
         associated_bonding_curve: accounts[3],
         user: accounts[7],
+        token_program: accounts[9],
         ..Default::default()
     }))
 }
@@ -230,7 +231,9 @@ fn parse_create_v2_token_instruction(
         mint_authority: accounts[1],
         bonding_curve: accounts[2],
         associated_bonding_curve: accounts[3],
-        user: accounts[7],
+        // FIX
+        user: accounts[5],
+        token_program: accounts[7],
         ..Default::default()
     }))
 }
@@ -266,8 +269,8 @@ fn parse_buy_instruction(
         user_volume_accumulator: accounts[13],
         fee_config: accounts[14],
         fee_program: accounts[15],
+        token_amount: amount,
         max_sol_cost,
-        amount,
         is_buy: true,
         ..Default::default()
     }))
@@ -305,7 +308,7 @@ fn parse_sell_instruction(
         fee_config: accounts[12],
         fee_program: accounts[13],
         min_sol_output,
-        amount,
+        token_amount: amount,
         is_buy: false,
         ..Default::default()
     }))
