@@ -1,18 +1,14 @@
 use crate::streaming::event_parser::{
-    common::{
-        filter::EventTypeFilter, high_performance_clock::elapsed_micros_since,
-        parse_swap_data_from_next_grpc_instructions, parse_swap_data_from_next_instructions,
-        EventMetadata,
-    },
-    core::{
+    DexEvent, Protocol, common::{
+        EventMetadata, filter::EventTypeFilter, high_performance_clock::elapsed_micros_since, parse_swap_data_from_next_grpc_instructions, parse_swap_data_from_next_instructions
+    }, core::{
         dispatcher::EventDispatcher,
         global_state::{
             add_bonk_dev_address, add_dev_address, is_bonk_dev_address_in_signature,
             is_dev_address_in_signature,
         },
         merger_event::merge,
-    },
-    DexEvent, Protocol,
+    }, protocols::raydium_amm_v4::parser::RAYDIUM_AMM_V4_PROGRAM_ID
 };
 use prost_types::Timestamp;
 use solana_sdk::{
@@ -325,28 +321,17 @@ impl EventParser {
             return Ok(());
         }
 
-        // 使用 EventDispatcher 匹配协议
-        let protocol = match EventDispatcher::match_protocol_by_program_id(&program_id) {
-            Some(p) => p,
-            None => return Ok(()),
+        let is_cu_program = EventDispatcher::is_compute_budget_program(&program_id);
+
+        let disc_len = match program_id {
+            RAYDIUM_AMM_V4_PROGRAM_ID => 1,
+            _ => 8,
         };
 
-        // 检查指令数据长度（至少需要 8 字节的 discriminator）
-        if instruction.data.len() < 8 {
+        // 检查指令数据长度（至少需要 disc_len 字节的 discriminator）
+        if !is_cu_program && instruction.data.len() < disc_len {
             return Ok(());
         }
-
-        // 提取 discriminator 和数据
-        let instruction_discriminator = &instruction.data[..8];
-        let instruction_data = &instruction.data[8..];
-
-        // 构建账户公钥列表
-        let account_pubkeys: Vec<Pubkey> = instruction
-            .accounts
-            .iter()
-            .filter_map(|&idx| accounts.get(idx as usize).copied())
-            .collect();
-
         // 创建元数据
         let timestamp = block_time.unwrap_or(Timestamp { seconds: 0, nanos: 0 });
         let block_time_ms = timestamp.seconds * 1000 + (timestamp.nanos as i64) / 1_000_000;
@@ -364,6 +349,33 @@ impl EventParser {
             transaction_index,
         );
 
+        if is_cu_program {
+            if let Some(event) = EventDispatcher::dispatch_compute_budget_instruction(
+                &instruction.data,
+                metadata.clone(),
+            ) {
+                callback(&event);
+            }
+            return Ok(());
+        }
+
+        // 使用 EventDispatcher 匹配协议
+        let protocol = match EventDispatcher::match_protocol_by_program_id(&program_id) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        // 提取 discriminator 和数据
+        let instruction_discriminator = &instruction.data[..disc_len];
+        let instruction_data = &instruction.data[disc_len..];
+
+        // 构建账户公钥列表
+        let account_pubkeys: Vec<Pubkey> = instruction
+            .accounts
+            .iter()
+            .filter_map(|&idx| accounts.get(idx as usize).copied())
+            .collect();
+
         // 使用 EventDispatcher 解析 instruction 事件
         let mut event = match EventDispatcher::dispatch_instruction(
             protocol.clone(),
@@ -376,13 +388,21 @@ impl EventParser {
             None => return Ok(()),
         };
 
-        // 处理 inner instructions
+        // 处理 inner instructions - 查找对应的 CPI log 进行 merge
+        // 当 inner_index 有值时，只查找索引大于当前 inner_index 的 CPI log
         let mut inner_instruction_event: Option<DexEvent> = None;
         if let Some(inner_instructions_ref) = inner_instructions {
+            let current_inner_idx = inner_index.unwrap_or(-1) as i32;
+            
             // 并行执行两个任务: 解析 inner event 和提取 swap_data
             let (inner_event_result, swap_data_result) = std::thread::scope(|s| {
                 let inner_event_handle = s.spawn(|| {
-                    for inner_instruction in inner_instructions_ref.instructions.iter() {
+                    for (idx, inner_instruction) in inner_instructions_ref.instructions.iter().enumerate() {
+                        // 只查找索引大于当前 inner_index 的 CPI log
+                        if (idx as i32) <= current_inner_idx {
+                            continue;
+                        }
+                        
                         let inner_data = &inner_instruction.data;
                         // 检查长度（需要 16 字节的 discriminator）
                         if inner_data.len() < 16 {
@@ -408,7 +428,7 @@ impl EventParser {
                         parse_swap_data_from_next_grpc_instructions(
                             &event,
                             inner_instructions_ref,
-                            inner_index.unwrap_or(-1_i64) as i8,
+                            current_inner_idx as i8,
                             accounts,
                         )
                     } else {
@@ -483,27 +503,17 @@ impl EventParser {
             return Ok(());
         }
 
-        // 使用 EventDispatcher 匹配协议
-        let protocol = match EventDispatcher::match_protocol_by_program_id(&program_id) {
-            Some(p) => p,
-            None => return Ok(()),
+        let is_cu_program = EventDispatcher::is_compute_budget_program(&program_id);
+
+        let disc_len = match program_id {
+            RAYDIUM_AMM_V4_PROGRAM_ID => 1,
+            _ => 8,
         };
 
         // 检查指令数据长度（至少需要 8 字节的 discriminator）
-        if instruction.data.len() < 8 {
+        if !is_cu_program && instruction.data.len() < disc_len {
             return Ok(());
         }
-
-        // 提取 discriminator 和数据
-        let instruction_discriminator = &instruction.data[..8];
-        let instruction_data = &instruction.data[8..];
-
-        // 构建账户公钥列表
-        let account_pubkeys: Vec<Pubkey> = instruction
-            .accounts
-            .iter()
-            .filter_map(|&idx| accounts.get(idx as usize).copied())
-            .collect();
 
         // 创建元数据
         let timestamp = block_time.unwrap_or(Timestamp { seconds: 0, nanos: 0 });
@@ -522,6 +532,33 @@ impl EventParser {
             transaction_index,
         );
 
+        if is_cu_program {
+            if let Some(event) = EventDispatcher::dispatch_compute_budget_instruction(
+                &instruction.data,
+                metadata.clone(),
+            ) {
+                callback(&event);
+            }
+            return Ok(());
+        }
+
+        // 使用 EventDispatcher 匹配协议
+        let protocol = match EventDispatcher::match_protocol_by_program_id(&program_id) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        // 提取 discriminator 和数据
+        let instruction_discriminator = &instruction.data[..disc_len];
+        let instruction_data = &instruction.data[disc_len..];
+
+        // 构建账户公钥列表
+        let account_pubkeys: Vec<Pubkey> = instruction
+            .accounts
+            .iter()
+            .filter_map(|&idx| accounts.get(idx as usize).copied())
+            .collect();
+
         // 使用 EventDispatcher 解析 instruction 事件
         let mut event = match EventDispatcher::dispatch_instruction(
             protocol.clone(),
@@ -534,13 +571,21 @@ impl EventParser {
             None => return Ok(()),
         };
 
-        // 处理 inner instructions
+        // 处理 inner instructions - 查找对应的 CPI log 进行 merge
+        // 当 inner_index 有值时，只查找索引大于当前 inner_index 的 CPI log
         let mut inner_instruction_event: Option<DexEvent> = None;
         if let Some(inner_instructions_ref) = inner_instructions {
+            let current_inner_idx = inner_index.unwrap_or(-1) as i32;
+            
             // 并行执行两个任务: 解析 inner event 和提取 swap_data
             let (inner_event_result, swap_data_result) = std::thread::scope(|s| {
                 let inner_event_handle = s.spawn(|| {
-                    for inner_instruction in inner_instructions_ref.instructions.iter() {
+                    for (idx, inner_instruction) in inner_instructions_ref.instructions.iter().enumerate() {
+                        // 只查找索引大于当前 inner_index 的 CPI log
+                        if (idx as i32) <= current_inner_idx {
+                            continue;
+                        }
+                        
                         let inner_data = &inner_instruction.instruction.data;
                         // 检查长度（需要 16 字节的 discriminator）
                         if inner_data.len() < 16 {
@@ -566,7 +611,7 @@ impl EventParser {
                         parse_swap_data_from_next_instructions(
                             &event,
                             inner_instructions_ref,
-                            inner_index.unwrap_or(-1_i64) as i8,
+                            current_inner_idx as i8,
                             accounts,
                         )
                     } else {
@@ -621,6 +666,8 @@ impl EventParser {
         // 使用 EventDispatcher 来匹配协议
         if let Some(protocol) = EventDispatcher::match_protocol_by_program_id(program_id) {
             protocols.contains(&protocol)
+        } else if EventDispatcher::is_compute_budget_program(program_id) {
+            return true;
         } else {
             false
         }
@@ -647,6 +694,14 @@ impl EventParser {
                     add_dev_address(&signature, token_info.creator);
                 }
                 DexEvent::PumpFunCreateTokenEvent(token_info)
+            }
+            DexEvent::PumpFunCreateV2TokenEvent(token_info) => {
+                add_dev_address(&signature, token_info.user);
+                if token_info.creator != Pubkey::default() && token_info.creator != token_info.user
+                {
+                    add_dev_address(&signature, token_info.creator);
+                }
+                DexEvent::PumpFunCreateV2TokenEvent(token_info)
             }
             DexEvent::PumpFunTradeEvent(mut trade_info) => {
                 trade_info.is_dev_create_token_trade =
@@ -696,3 +751,4 @@ impl EventParser {
         }
     }
 }
+
