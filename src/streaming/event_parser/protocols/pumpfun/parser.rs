@@ -118,7 +118,7 @@ fn parse_create_token_instruction(
 ) -> Option<DexEvent> {
     metadata.event_type = EventType::PumpFunCreateToken;
 
-    if data.len() < 16 || accounts.len() < 11 {
+    if data.len() < 16 || accounts.len() < 14 {
         return None;
     }
     let mut offset = 0;
@@ -190,7 +190,7 @@ fn parse_create_v2_token_instruction(
 ) -> Option<DexEvent> {
     metadata.event_type = EventType::PumpFunCreateV2Token;
 
-    if data.len() < 16 || accounts.len() < 11 {
+    if data.len() < 16 || accounts.len() < 16 {
         return None;
     }
     let mut offset = 0;
